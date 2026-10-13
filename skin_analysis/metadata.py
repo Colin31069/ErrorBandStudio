@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 
 from .config import DEFAULT_MEDICINE_COUNT, MAX_MEDICINES, METADATA_FILENAME
 from .models import ExcludedSample, ExperimentMetadata, MedicineEntry
@@ -103,7 +104,7 @@ def load_experiment_metadata(folder_path: str) -> tuple[ExperimentMetadata, str 
             raw_data = json.load(file_obj)
         return _normalize_metadata(raw_data), None
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return default_experiment_metadata(), f"Metadata file was reset because it could not be read: {exc}"
+        return default_experiment_metadata(), f"Metadata could not be read; the original file was left unchanged: {exc}"
 
 
 def save_experiment_metadata(folder_path: str, metadata: ExperimentMetadata) -> None:
@@ -127,5 +128,15 @@ def save_experiment_metadata(folder_path: str, metadata: ExperimentMetadata) -> 
         ],
     }
 
-    with open(path, "w", encoding="utf-8") as file_obj:
-        json.dump(payload, file_obj, ensure_ascii=False, indent=2)
+    # Do not truncate the existing exclusion record if a save is interrupted.
+    fd, temp_path = tempfile.mkstemp(prefix=f".{METADATA_FILENAME}.", suffix=".tmp", dir=folder_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+            json.dump(payload, file_obj, ensure_ascii=False, indent=2)
+            file_obj.write("\n")
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)

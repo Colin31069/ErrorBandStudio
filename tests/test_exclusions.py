@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from skin_analysis.exclusions import current_excluded_samples, max_excluded_samples
+from skin_analysis.exclusions import current_excluded_samples, max_excluded_samples, unhonored_excluded_samples
 from skin_analysis.models import ExcludedSample
 
 
@@ -39,6 +39,15 @@ class ExclusionPolicyTests(unittest.TestCase):
 
         self.assertEqual(current_excluded_samples(excluded, files), [])
 
+
+    def test_recorded_exclusion_is_not_silently_included_after_sample_count_shrinks(self) -> None:
+        excluded = [ExcludedSample(file_name="2.xlsx", reason="bad contact")]
+        original_files = [f"{i}.xlsx" for i in range(1, 6)]
+        self.assertEqual(unhonored_excluded_samples(excluded, original_files), [])
+        remaining_files = original_files[:4]
+        self.assertEqual(current_excluded_samples(excluded, remaining_files), [])
+        self.assertEqual(unhonored_excluded_samples(excluded, remaining_files), excluded)
+        self.assertEqual(unhonored_excluded_samples(excluded, ["1.xlsx", "3.xlsx"]), [])
 
 if __name__ == "__main__":
     unittest.main()

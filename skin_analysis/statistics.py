@@ -8,6 +8,7 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 
 from .analysis import process_single_file
+from .csv_safety import spreadsheet_safe_cell
 from .config import (
     DEFAULT_BASELINE_DURATION_SEC,
     DEFAULT_BASELINE_WARNING_THRESHOLD_PCT,
@@ -18,7 +19,7 @@ from .config import (
     OUTLIER_MIN_GROUP_N,
     OUTLIER_MODIFIED_Z_THRESHOLD,
 )
-from .exclusions import current_excluded_samples, max_excluded_samples
+from .exclusions import current_excluded_samples, max_excluded_samples, unhonored_excluded_samples
 from .filesystem import get_subfolders, list_xlsx_files
 from .metadata import load_experiment_metadata
 from .models import (
@@ -633,6 +634,7 @@ def collect_delta_percent_samples(
     excluded_samples: list[StatisticalExclusion] = []
     warnings: list[str] = []
     group_names = get_subfolders(root_path)
+    unreadable_groups: set[str] = set()
     for group_name in group_names:
         group_dir = os.path.join(root_path, group_name)
         files = list_xlsx_files(group_dir)
@@ -642,7 +644,15 @@ def collect_delta_percent_samples(
 
         metadata, metadata_warning = load_experiment_metadata(group_dir)
         if metadata_warning:
-            warnings.append(f"Group '{group_name}' metadata warning: {metadata_warning}")
+            warnings.append(f"Group '{group_name}' skipped because metadata could not be read: {metadata_warning}")
+            unreadable_groups.add(group_name)
+            continue
+        unhonored = unhonored_excluded_samples(metadata.excluded_samples, files)
+        if unhonored:
+            names = ", ".join(entry.file_name for entry in unhonored)
+            warnings.append(f"Group '{group_name}' skipped: recorded exclusions cannot be honored at current sample count: {names}")
+            unreadable_groups.add(group_name)
+            continue
         current_exclusions = current_excluded_samples(metadata.excluded_samples, files)
         excluded_file_names = {entry.file_name for entry in current_exclusions}
         excluded_samples.extend(
@@ -668,7 +678,8 @@ def collect_delta_percent_samples(
         samples.extend(group_samples)
         warnings.extend(group_warnings)
 
-    return samples, tuple(warnings), excluded_samples, group_names
+    valid_group_names = [name for name in group_names if name not in unreadable_groups]
+    return samples, tuple(warnings), excluded_samples, valid_group_names
 
 
 def build_statistical_analysis(
@@ -1067,6 +1078,7 @@ def statistics_result_to_csv_rows(result: StatisticalAnalysisResult) -> list[lis
                 "baseline_warning_status",
                 "drop_detection_source",
                 "warnings",
+                "file_name",
             ],
         ]
     )
@@ -1082,6 +1094,7 @@ def statistics_result_to_csv_rows(result: StatisticalAnalysisResult) -> list[lis
                 sample.baseline_warning_status,
                 sample.drop_detection_source,
                 "; ".join(sample.warnings),
+                sample_file_name(sample),
             ]
         )
     return rows
@@ -1090,4 +1103,5 @@ def statistics_result_to_csv_rows(result: StatisticalAnalysisResult) -> list[lis
 def write_statistics_csv(result: StatisticalAnalysisResult, path: str) -> None:
     with open(path, "w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerows(statistics_result_to_csv_rows(result))
+        for row in statistics_result_to_csv_rows(result):
+            writer.writerow([spreadsheet_safe_cell(cell) for cell in row])

@@ -23,7 +23,7 @@ from .config import (
     DEFAULT_ROOT_PATH,
     MAX_MEDICINES,
 )
-from .exclusions import current_excluded_samples, max_excluded_samples
+from .exclusions import current_excluded_samples, max_excluded_samples, unhonored_excluded_samples
 from .filesystem import get_subfolders, list_xlsx_files, normalize_directory_path, resolve_directory_path
 from .metadata import (
     default_experiment_metadata,
@@ -107,15 +107,18 @@ class RawDataViewerApp(tk.Tk):
         self._excluded_samples: list[ExcludedSample] = []
         self._dixon_suggested_reasons: dict[str, str] = {}
         self._is_loading_metadata = False
+        self._metadata_unreadable_folder = ""
         self._metadata_expanded = False
         self._metadata_toggle_text = tk.StringVar(value="")
         self._warning_dialog: tk.Toplevel | None = None
         self._last_default_plot_title = ""
         self._overlay_legend_entries: dict[str, object] = {}
+        self._classic_results: SimpleQueue = SimpleQueue()
 
         self.create_widgets()
         self.custom_plot_title_var.trace_add("write", self._on_custom_plot_title_changed)
         self.refresh_folder_structure(show_errors=False)
+        self.after(80, self._poll_classic_results)
 
     def create_widgets(self) -> None:
         main_frame = ttk.Frame(self, padding="10")
@@ -545,8 +548,8 @@ class RawDataViewerApp(tk.Tk):
             )
             for index in range(count)
         ]
-        files = self._sample_file_names or self._current_sample_files()
-        excluded_samples = current_excluded_samples(self._excluded_samples, files)
+        # Preserve recorded exclusions even if fewer files are currently present.
+        excluded_samples = list(self._excluded_samples)
         return ExperimentMetadata(
             medicine_count=count,
             medicines=medicines,
@@ -609,6 +612,9 @@ class RawDataViewerApp(tk.Tk):
             messagebox.showwarning("No Sample Selected", "Please select a sample to exclude.")
             return
 
+        if not self._metadata_is_safe_to_use(self._current_experiment_dir()):
+            return
+
         files = self._current_sample_files()
         if file_name not in files:
             self._refresh_sample_exclusion_list()
@@ -644,8 +650,9 @@ class RawDataViewerApp(tk.Tk):
         if reason is None:
             return
 
-        self._excluded_samples = excluded_samples + [
-            ExcludedSample(file_name=file_name, reason=reason.strip(), method=exclusion_method)
+        self._excluded_samples = [
+            *self._excluded_samples,
+            ExcludedSample(file_name=file_name, reason=reason.strip(), method=exclusion_method),
         ]
         self._dixon_suggested_reasons.pop(file_name, None)
         self._refresh_sample_exclusion_list()
@@ -657,13 +664,16 @@ class RawDataViewerApp(tk.Tk):
             messagebox.showwarning("No Sample Selected", "Please select a sample to restore.")
             return
 
+        if not self._metadata_is_safe_to_use(self._current_experiment_dir()):
+            return
+
         files = self._current_sample_files()
         excluded_samples = current_excluded_samples(self._excluded_samples, files)
         if not any(entry.file_name == file_name for entry in excluded_samples):
             messagebox.showinfo("Not Excluded", f"{file_name} is already included.")
             return
 
-        self._excluded_samples = [entry for entry in excluded_samples if entry.file_name != file_name]
+        self._excluded_samples = [entry for entry in self._excluded_samples if entry.file_name.casefold() != file_name.casefold()]
         self._dixon_suggested_reasons.pop(file_name, None)
         self._refresh_sample_exclusion_list()
         self._autosave_current_metadata()
@@ -684,6 +694,8 @@ class RawDataViewerApp(tk.Tk):
         if not os.path.isdir(target_dir):
             messagebox.showerror("Error", "Experiment folder not found.")
             self.experiment_list.focus_set()
+            return
+        if not self._metadata_is_safe_to_use(target_dir):
             return
 
         files = list_xlsx_files(target_dir)
@@ -715,9 +727,9 @@ class RawDataViewerApp(tk.Tk):
                     drug_apply_time_sec=drug_apply_time_sec,
                     drug_apply_tolerance_sec=drug_apply_tolerance_sec,
                 )
-                self.after(0, lambda recommendations=recommendations, notes=notes: self._apply_dixon_q_result(recommendations, notes, len(files)))
+                self._classic_results.put((self._apply_dixon_q_result, (recommendations, notes, len(files))))
             except Exception as exc:
-                self.after(0, lambda exc=exc: self._dixon_q_failed(exc))
+                self._classic_results.put((self._dixon_q_failed, (exc,)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -762,12 +774,35 @@ class RawDataViewerApp(tk.Tk):
         self._set_plotting_state(False)
         messagebox.showerror("Dixon Q Error", f"Failed to run Dixon Q review.\n\n{exc}")
 
+    def _metadata_is_safe_to_use(self, folder_path: str, show_errors: bool = True) -> bool:
+        if folder_path == self._metadata_unreadable_folder:
+            warning = "Repair the existing metadata JSON and refresh this experiment before continuing."
+        else:
+            metadata, warning = load_experiment_metadata(folder_path)
+            if warning is None:
+                unhonored = unhonored_excluded_samples(metadata.excluded_samples, list_xlsx_files(folder_path))
+                if unhonored:
+                    names = ", ".join(entry.file_name for entry in unhonored)
+                    warning = f"Recorded exclusions cannot be honored at the current sample count: {names}"
+            if warning:
+                self._metadata_unreadable_folder = folder_path
+        if warning:
+            if show_errors:
+                messagebox.showwarning(
+                    "Metadata Unreadable",
+                    f"Analysis and metadata saving are blocked for this experiment.\n\n{warning}",
+                )
+            return False
+        return True
+
     def _autosave_current_metadata(self, show_errors: bool = True) -> bool:
         if self._is_loading_metadata:
             return False
 
         folder_path = self._current_experiment_dir()
         if not folder_path or not os.path.isdir(folder_path):
+            return False
+        if not self._metadata_is_safe_to_use(folder_path, show_errors=show_errors):
             return False
 
         try:
@@ -784,18 +819,28 @@ class RawDataViewerApp(tk.Tk):
     def _load_selected_experiment_metadata(self) -> None:
         folder_path = self._current_experiment_dir()
         if not folder_path or not os.path.isdir(folder_path):
+            self._metadata_unreadable_folder = ""
             self._clear_metadata_editor()
             return
 
         file_missing = not os.path.exists(metadata_file_path(folder_path))
         metadata, warning_message = load_experiment_metadata(folder_path)
+        if warning_message is None:
+            unhonored = unhonored_excluded_samples(metadata.excluded_samples, list_xlsx_files(folder_path))
+            if unhonored:
+                names = ", ".join(entry.file_name for entry in unhonored)
+                warning_message = f"Recorded exclusions cannot be honored at the current sample count: {names}"
+        self._metadata_unreadable_folder = folder_path if warning_message else ""
         self._apply_metadata_to_editor(metadata)
 
-        if file_missing or warning_message is not None:
+        if file_missing and warning_message is None:
             self._autosave_current_metadata(show_errors=False)
 
         if warning_message:
-            messagebox.showwarning("Metadata Reset", warning_message)
+            messagebox.showwarning(
+                "Metadata Unreadable",
+                f"{warning_message}\n\nThe original file was preserved. Repair it and refresh this experiment before analyzing or saving metadata.",
+            )
 
     def _on_experiment_selected(self, _event=None) -> None:
         new_value = self._selected_list_value(self.experiment_list)
@@ -964,6 +1009,8 @@ class RawDataViewerApp(tk.Tk):
             messagebox.showerror("Error", "Experiment folder not found.")
             self.experiment_list.focus_set()
             return
+        if not self._metadata_is_safe_to_use(target_dir):
+            return
 
         all_files = list_xlsx_files(target_dir)
         if not all_files:
@@ -1016,9 +1063,22 @@ class RawDataViewerApp(tk.Tk):
     def _plot_data_worker(self, settings: PlotSettings, group_color) -> None:
         try:
             payload = build_plot_payload(settings, group_color)
-            self.after(0, lambda payload=payload: self._plot_data_apply(payload))
+            self._classic_results.put((self._plot_data_apply, (payload,)))
         except Exception as exc:
-            self.after(0, lambda exc=exc: self._plot_data_failed(exc))
+            self._classic_results.put((self._plot_data_failed, (exc,)))
+
+    def _poll_classic_results(self) -> None:
+        """Dispatch worker results on Tk main loop; workers never call Tk."""
+        try:
+            while True:
+                try:
+                    callback, args = self._classic_results.get_nowait()
+                except Empty:
+                    break
+                callback(*args)
+        finally:
+            if self.winfo_exists():
+                self.after(80, self._poll_classic_results)
 
     def _plot_data_apply(self, payload: PlotPayload) -> None:
         settings = payload.settings
@@ -1176,6 +1236,10 @@ class RawDataViewerApp(tk.Tk):
         if warning_lines and timing_lines:
             warning_lines.append("")
         warning_lines.extend(timing_lines)
+        if payload.warnings:
+            if warning_lines:
+                warning_lines.append("")
+            warning_lines.extend(["[Skipped Samples]", *payload.warnings])
         self._show_warning_dialog("Plot Warnings", warning_lines)
 
     def open_statistics_dialog(self) -> None:
@@ -1275,9 +1339,9 @@ class RawDataViewerApp(tk.Tk):
                         drug_apply_time_sec=drug_apply_time_sec,
                         drug_apply_tolerance_sec=drug_apply_tolerance_sec,
                     )
-                    self.after(0, lambda result=result: apply_statistics_result(result))
+                    self._classic_results.put((apply_statistics_result, (result,)))
                 except Exception as exc:
-                    self.after(0, lambda exc=exc: fail_statistics(exc))
+                    self._classic_results.put((fail_statistics, (exc,)))
 
             threading.Thread(target=worker, daemon=True).start()
 

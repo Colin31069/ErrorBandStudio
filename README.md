@@ -44,7 +44,7 @@ ROOT/
 
 「進階」可調整取樣間隔、baseline 長度、施加時間與搜尋範圍。預設為 **0.1 秒／20 秒／25 ± 5 秒**；Excel 若使用不同取樣間隔，請先調整。這一版從取樣間隔建立時間軸，不讀取 Excel 的時間欄位。
 
-修改資料、顯示單位或分析參數後，需重新製圖。SD／SEM、格線、標題與圖例可直接更新。匯出圖片使用目前畫面，PNG 為 300 dpi；CSV 包含 mean、SD、SEM、上下界、實際 n、來源檔名、圖例、設定及注意事項。
+修改資料、顯示單位或分析參數後，需重新製圖。SD／SEM、格線、標題與圖例可直接更新。匯出圖片使用目前畫面，PNG 為 300 dpi；CSV 包含 mean、SD、SEM、上下界、實際 n、來源檔名、圖例、設定及注意事項。匯出時會把類似試算表公式的組名、檔名和備註轉為純文字，避免開啟 CSV 時觸發公式；科研數值不變。
 
 如果資料夾已有 `.skin_analysis_metadata.json`，程式會遵循原本有效的排除規則並回報排除項目，無需編輯原始資料。若 metadata 損壞，會暫停納入該組並提示修正，避免錯誤重新納入已排除樣本。這個精簡介面只讀取 metadata。
 
@@ -65,3 +65,12 @@ python build_portable.py --source-only
 ```
 
 可產出更小的 `dist/ErrorBandStudio-source.zip`，供已有 Python 的使用者使用。Windows exe 不能在 macOS 建置或完成原生驗證；分享前，請在 Windows 解壓完整包，使用示範資料確認載入、SD／SEM、圖片及 CSV 匯出。
+
+維護者應先在**完整原始碼 Repository** 執行自動化測試，確認分享 ZIP 包含每個 Python 執行模組及所有合成樣本。分享 ZIP 不包含開發用 `tests/` 與測試依賴：
+
+```bash
+python -m pip install -r requirements-tests.txt
+python -m unittest discover -s tests -q
+```
+
+其中 `test_portable_source.py` 驗證 ZIP 清單、檔案完整性、合成 Excel 欄名與精簡依賴；這不等於原生 Windows/macOS GUI 的人工操作驗證。

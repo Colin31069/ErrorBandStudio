@@ -94,6 +94,7 @@ class PlotPayload:
     title: str
     y_unit: str
     plot_items: list[PlotItem]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

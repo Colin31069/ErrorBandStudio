@@ -229,5 +229,37 @@ class PlottingTests(unittest.TestCase):
         self.assertEqual(display_mode_to_y_unit("Base"), "Baseline Capacitance (pF)")
 
 
+    def test_classic_reports_unreadable_sample_instead_of_silent_skip(self) -> None:
+        settings = make_settings(all_files=["broken.xlsx"])
+        with patch("skin_analysis.plotting.process_single_file", return_value=None):
+            payload = build_plot_payload(settings, group_color=None)
+        self.assertEqual(payload.plot_items, [])
+        self.assertEqual(len(payload.warnings), 1)
+        self.assertIn("broken.xlsx", payload.warnings[0])
+
+    def test_classic_skips_zero_baseline_normalization_with_warning(self) -> None:
+        settings = make_settings(all_files=["zero.xlsx"], display_mode="Norm")
+        with patch("skin_analysis.plotting.process_single_file", return_value=make_signal(initial_avg=0.0)):
+            payload = build_plot_payload(settings, group_color=None)
+        self.assertEqual(payload.plot_items, [])
+        self.assertEqual(len(payload.warnings), 1)
+        self.assertIn("zero.xlsx", payload.warnings[0])
+        self.assertIn("zero baseline", payload.warnings[0])
+
+    def test_classic_warning_dialog_includes_skipped_sample_details(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from skin_analysis.gui import RawDataViewerApp
+
+        editor = SimpleNamespace(
+            _build_baseline_warning_lines=lambda payload: [],
+            _build_timing_warning_lines=lambda payload: [],
+            _show_warning_dialog=Mock(),
+        )
+        payload = SimpleNamespace(warnings=("bad.xlsx: unreadable",))
+        RawDataViewerApp._show_plot_warnings(editor, payload)
+        _title, lines = editor._show_warning_dialog.call_args.args
+        self.assertIn("bad.xlsx: unreadable", lines)
+
 if __name__ == "__main__":
     unittest.main()

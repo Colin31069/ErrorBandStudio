@@ -1,0 +1,3 @@
+# Full Python test suite (Classic + scientific regression).
+# This is intentionally separate from the lightweight error-band runtime.
+-r requirements-gui.txt

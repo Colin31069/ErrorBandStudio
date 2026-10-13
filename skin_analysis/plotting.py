@@ -8,7 +8,8 @@ import numpy as np
 
 from .analysis import analyze_signal, load_capacitance_values, process_single_file
 from .config import LINE_STYLE_CYCLE
-from .exclusions import current_excluded_file_names
+from .csv_safety import spreadsheet_safe_cell
+from .exclusions import current_excluded_file_names, unhonored_excluded_samples
 from .filesystem import list_xlsx_files
 from .metadata import load_experiment_metadata
 from .models import (
@@ -101,6 +102,11 @@ def build_error_band_payload(
             warnings.append(f"{group_name}：metadata 無法讀取，暫不納入此組，請修正後重試。{metadata_warning}")
             continue
         files = list_xlsx_files(folder)
+        unhonored = unhonored_excluded_samples(metadata.excluded_samples, files)
+        if unhonored:
+            names = ", ".join(entry.file_name for entry in unhonored)
+            warnings.append(f"{group_name}：排除名單與目前樣本數不相容，暫停此組以避免重新納入：{names}")
+            continue
         excluded = current_excluded_file_names(metadata.excluded_samples, files)
         signals: list[ProcessedSignal] = []
         sample_names: list[str] = []
@@ -179,7 +185,7 @@ def write_error_band_csv(payload: ErrorBandPayload, path: str, band_type: str = 
         for group in payload.groups:
             for time_sec, mean, sd, sem in zip(group.time_sec, group.mean, group.sd, group.sem):
                 error = sd if band_type == "SD" else sem
-                writer.writerow((
+                writer.writerow(tuple(spreadsheet_safe_cell(cell) for cell in (
                     group.group_name, f"{time_sec:.10g}", group.n, mean,
                     sd if group.n > 1 else "", sem if group.n > 1 else "", band_type,
                     mean - error if group.n > 1 else "", mean + error if group.n > 1 else "",
@@ -188,7 +194,7 @@ def write_error_band_csv(payload: ErrorBandPayload, path: str, band_type: str = 
                     payload.settings.drug_apply_time_sec, payload.settings.drug_apply_tolerance_sec,
                     " | ".join(payload.warnings),
                     group.legend_label or group.group_name,
-                ))
+                )))
 
 
 def display_mode_to_y_unit(display_mode: str) -> str:
@@ -210,6 +216,8 @@ def transform_signal_for_display(
     delta_raw = signal.delta_capacitance
 
     if display_mode == "Norm":
+        if abs(base) < 1e-12:
+            raise ValueError("Cannot normalize a signal with a zero baseline.")
         y_plot = (signal.capacitance / base) * 100
         delta_pct = (((base + delta_raw) / base) * 100) - 100
         delta_str = f"Δ:{delta_pct:.2f}%"
@@ -346,6 +354,7 @@ def build_plot_item(
 def build_plot_payload(settings: PlotSettings, group_color: Any | None) -> PlotPayload:
     style_cycler = cycle(LINE_STYLE_CYCLE)
     plot_items: list[PlotItem] = []
+    warnings: list[str] = []
     excluded_file_names = current_excluded_file_names(settings.metadata.excluded_samples, settings.all_files)
 
     for fname in settings.all_files:
@@ -361,16 +370,21 @@ def build_plot_payload(settings: PlotSettings, group_color: Any | None) -> PlotP
             drug_apply_tolerance_sec=settings.drug_apply_tolerance_sec,
         )
         if signal is None:
+            warnings.append(f"{fname}: 無法解析或分析 Excel 資料；請檢查欄名、缺值及資料格式。")
             continue
 
         line_style = next(style_cycler) if settings.use_group_color else "-"
         line_color = group_color if settings.use_group_color else None
         sample_name = os.path.splitext(fname)[0]
-        plot_items.append(build_plot_item(signal, sample_name, settings, line_style, line_color))
+        try:
+            plot_items.append(build_plot_item(signal, sample_name, settings, line_style, line_color))
+        except ValueError as exc:
+            warnings.append(f"{fname}: {exc}")
 
     return PlotPayload(
         settings=settings,
         title=build_plot_title(settings.experiment_name, settings.metadata, settings.custom_title),
         y_unit=display_mode_to_y_unit(settings.display_mode),
         plot_items=plot_items,
+        warnings=tuple(warnings),
     )

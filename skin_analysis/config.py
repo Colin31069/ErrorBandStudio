@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-DEFAULT_ROOT_PATH = ""
+DEFAULT_ROOT_PATH = "/Users/k/Documents/skin_data/20260407"
 DEFAULT_MEDICINE_COUNT = 1
 MAX_MEDICINES = 5
 METADATA_FILENAME = ".skin_analysis_metadata.json"

@@ -11,7 +11,7 @@ from openpyxl import Workbook
 from skin_analysis.analysis import process_single_file, read_xlsx_single
 
 
-PARITY_CASES_PATH = Path(__file__).resolve().parents[2] / "shared" / "parity_cases.json"
+PARITY_CASES_PATH = Path(__file__).resolve().parents[1] / "shared" / "parity_cases.json"
 
 
 def load_xlsx_cases() -> list[dict]:

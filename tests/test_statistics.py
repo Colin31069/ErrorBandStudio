@@ -364,5 +364,60 @@ class StatisticsTests(unittest.TestCase):
         self.assertTrue(any(row[:2] == ["drug", "d5.xlsx"] for row in rows))
 
 
+    def test_corrupt_metadata_skips_entire_group_without_reincluding_samples(self) -> None:
+        from skin_analysis.statistics import build_statistical_analysis
+
+        for malformed in ("{broken json", '{"excluded_samples": "invalid schema"}'):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                good_group = root / "good"
+                broken_group = root / "unreadable"
+                good_group.mkdir()
+                broken_group.mkdir()
+                values = np.concatenate([np.full(50, 10.0), np.full(120, 12.0)])
+                for folder in (good_group, broken_group):
+                    pd.DataFrame({"pF - Plot 0": values}).to_excel(folder / "1.xlsx", index=False)
+
+                metadata_path = broken_group / ".skin_analysis_metadata.json"
+                metadata_path.write_text(malformed, encoding="utf-8")
+                original_bytes = metadata_path.read_bytes()
+                kwargs = dict(
+                    baseline_duration_sec=5.0,
+                    drug_apply_time_sec=10.0,
+                    drug_apply_tolerance_sec=1.0,
+                )
+                samples, warnings, excluded, groups = collect_delta_percent_samples(tmp_dir, **kwargs)
+                self.assertEqual(groups, ["good"])
+                self.assertEqual([sample.group_name for sample in samples], ["good"])
+                self.assertAlmostEqual(samples[0].delta_percent, 20.0)
+                self.assertEqual(excluded, [])
+                self.assertTrue(any("unreadable" in warning and "skipped" in warning for warning in warnings))
+                self.assertEqual(metadata_path.read_bytes(), original_bytes)
+
+                result = build_statistical_analysis(tmp_dir, **kwargs)
+                self.assertEqual([group.group_name for group in result.group_statistics], ["good"])
+                self.assertEqual([sample.group_name for sample in result.samples], ["good"])
+                self.assertEqual(metadata_path.read_bytes(), original_bytes)
+
+
+    def test_statistics_skip_group_when_exclusions_exceed_current_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir) / "reduced"
+            folder.mkdir()
+            for i in range(1, 5):
+                pd.DataFrame({"pF - Plot 0": np.concatenate([np.full(50, 10.), np.full(120, 12.)])}).to_excel(
+                    folder / f"{i}.xlsx", index=False,
+                )
+            save_experiment_metadata(str(folder), ExperimentMetadata(
+                1, [MedicineEntry("", "")], [ExcludedSample("2.xlsx", "manual")],
+            ))
+            samples, warnings, _excluded, groups = collect_delta_percent_samples(tmp_dir)
+            self.assertEqual(samples, [])
+            self.assertEqual(groups, [])
+            self.assertTrue(any("reduced" in w and "cannot be honored" in w for w in warnings))
+            metadata, metadata_warning = __import__("skin_analysis.metadata", fromlist=["load_experiment_metadata"]).load_experiment_metadata(str(folder))
+            self.assertIsNone(metadata_warning)
+            self.assertEqual(metadata.excluded_samples, [ExcludedSample("2.xlsx", "manual")])
+
 if __name__ == "__main__":
     unittest.main()

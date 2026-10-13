@@ -64,6 +64,20 @@ def current_excluded_samples(
     return current
 
 
+def unhonored_excluded_samples(
+    excluded_samples: Sequence[ExcludedSample],
+    all_files: Sequence[str],
+) -> list[ExcludedSample]:
+    """Recorded exclusions that current sample-count policy cannot honor.
+
+    Missing files remain stored for provenance but never block analysis.
+    """
+    available = {name.casefold() for name in all_files}
+    honored = {entry.file_name.casefold() for entry in current_excluded_samples(excluded_samples, all_files)}
+    return [entry for entry in excluded_samples
+            if entry.file_name.casefold() in available and entry.file_name.casefold() not in honored]
+
+
 def current_excluded_file_names(
     excluded_samples: Sequence[ExcludedSample],
     all_files: Sequence[str],

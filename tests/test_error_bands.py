@@ -9,7 +9,7 @@ import numpy as np
 from openpyxl import Workbook
 
 from skin_analysis.metadata import save_experiment_metadata
-from skin_analysis.models import ErrorBandSettings, ExcludedSample, ExperimentMetadata
+from skin_analysis.models import ErrorBandPayload, ErrorBandSettings, ExcludedSample, ExperimentMetadata
 from skin_analysis.plotting import aggregate_error_band, build_error_band_payload, write_error_band_csv
 from tests.test_plotting import make_signal
 
@@ -124,6 +124,45 @@ class ErrorBandTests(unittest.TestCase):
             self.assertAlmostEqual(float(row["lower"]), 2.)
             self.assertAlmostEqual(float(row["upper"]), 4.)
 
+
+    def test_error_band_csv_escapes_untrusted_labels_without_changing_numeric_columns(self) -> None:
+        settings = ErrorBandSettings()
+        group = aggregate_error_band(
+            "=1+1", [make_signal(), make_signal(initial_avg=12.0)],
+            ("+trial.xlsx", "ordinary.xlsx"), settings,
+        )
+        payload = ErrorBandPayload("", settings, (group,), ("=HYPERLINK(1)",))
+        with tempfile.TemporaryDirectory() as directory:
+            result_path = Path(directory) / "safe.csv"
+            write_error_band_csv(payload, str(result_path), "SD")
+            with result_path.open(encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.DictReader(file))
+        self.assertTrue(rows)
+        row = rows[0]
+        self.assertEqual(row["group"], "'=1+1")
+        self.assertEqual(row["sample_files"], "'+trial.xlsx; ordinary.xlsx")
+        self.assertEqual(row["warnings"], "'=HYPERLINK(1)")
+        self.assertEqual(row["legend_label"], "'=1+1")
+        self.assertEqual(row["n"], "2")
+        self.assertAlmostEqual(float(row["mean"]), -1.0)
+        self.assertEqual(row["time_sec"], "-0.2")
+
+    def test_error_band_skips_group_if_recorded_exclusion_no_longer_fits_sample_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "shrunk"
+            folder.mkdir()
+            for index in range(1, 5):
+                write_xlsx(folder / f"{index}.xlsx", [10.0] * 30 + [12.0] * 30)
+            save_experiment_metadata(str(folder), ExperimentMetadata(
+                medicine_count=1,
+                medicines=[],
+                excluded_samples=[ExcludedSample("2.xlsx", "bad contact")],
+            ))
+            settings = ErrorBandSettings(baseline_duration_sec=1.0, drug_apply_time_sec=3.0, drug_apply_tolerance_sec=0.5)
+            payload = build_error_band_payload(directory, ["shrunk"], settings)
+            self.assertFalse(payload.groups)
+            self.assertTrue(any("2.xlsx" in warning and "暫停" in warning for warning in payload.warnings))
+            self.assertTrue((folder / ".skin_analysis_metadata.json").exists())
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,55 @@
+{
+  "xlsxCases": [
+    {
+      "name": "threshold_crossing",
+      "column": "pF - Plot 0",
+      "segments": [
+        { "repeat": 200, "value": 5.0 },
+        { "repeat": 3, "value": 5.0 },
+        { "repeat": 1, "value": 8.5 },
+        { "repeat": 120, "value": 9.0 }
+      ],
+      "expected": {
+        "initialAvg": 5.0,
+        "dropTime": 20.3,
+        "deltaCapacitance": 4.0
+      }
+    },
+    {
+      "name": "no_crossing",
+      "column": "pF - Plot 0",
+      "segments": [
+        { "repeat": 200, "value": 7.0 },
+        { "repeat": 40, "value": 7.0 }
+      ],
+      "expected": {
+        "initialAvg": 7.0,
+        "dropTime": 20.0,
+        "deltaCapacitance": 0.0
+      }
+    },
+    {
+      "name": "short_signal",
+      "column": "pF - Plot 0",
+      "segments": [
+        { "repeat": 1, "value": 2.0 },
+        { "repeat": 1, "value": 4.0 },
+        { "repeat": 1, "value": 6.0 },
+        { "repeat": 1, "value": 8.0 }
+      ],
+      "expected": {
+        "initialAvg": 5.0,
+        "dropTime": 0.4,
+        "deltaCapacitance": "NaN"
+      }
+    },
+    {
+      "name": "missing_required_column",
+      "column": "Not The Right Column",
+      "segments": [
+        { "repeat": 4, "value": 10.0 }
+      ],
+      "expectedError": "missing_column"
+    }
+  ]
+}
